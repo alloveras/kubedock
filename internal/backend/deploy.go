@@ -90,7 +90,16 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 	container := in.containerTemplate
 	container.Image = tainr.Image
 	container.Name = "main"
-	container.Command = tainr.Entrypoint
+	// Docker clients override an image's entrypoint by sending [""] (a single
+	// empty-string element). Kubernetes has no equivalent — setting Command to
+	// [""] causes the container to fail immediately trying to exec "". Treat
+	// [""] the same as nil so the image's own entrypoint is used; for the common
+	// case (base images with no entrypoint) this lets Cmd run as the full command.
+	if len(tainr.Entrypoint) == 1 && tainr.Entrypoint[0] == "" {
+		container.Command = nil
+	} else {
+		container.Command = tainr.Entrypoint
+	}
 	container.Args = tainr.Cmd
 	container.Env = tainr.GetEnvVar()
 	container.Ports = in.getContainerPorts(tainr)
