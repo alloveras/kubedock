@@ -46,7 +46,19 @@ const (
 // StartContainer will start given container object in kubernetes and
 // waits until it's started, or failed with an error.
 func (in *instance) StartContainer(tainr *types.Container) (DeployState, error) {
-	state, err := in.startContainer(tainr)
+	return in.startContainerWithSetup(tainr, nil)
+}
+
+// StartContainerForInspection starts the container with a busybox init
+// container that injects a static sleep binary, overriding the main
+// entrypoint so the pod stays alive for docker cp / exec regardless of
+// what the image contains. Intended for tools like container_structure_test.
+func (in *instance) StartContainerForInspection(tainr *types.Container) (DeployState, error) {
+	return in.startContainerWithSetup(tainr, in.addInspectionTools)
+}
+
+func (in *instance) startContainerWithSetup(tainr *types.Container, setup func(*corev1.Pod)) (DeployState, error) {
+	state, err := in.startContainer(tainr, setup)
 	if state == DeployFailed {
 		if klog.V(2) {
 			klog.Infof("container %s log output:", tainr.ShortID)
@@ -61,7 +73,7 @@ func (in *instance) StartContainer(tainr *types.Container) (DeployState, error) 
 	return state, err
 }
 
-func (in *instance) startContainer(tainr *types.Container) (DeployState, error) {
+func (in *instance) startContainer(tainr *types.Container, setup func(*corev1.Pod)) (DeployState, error) {
 	pulpol, err := tainr.GetImagePullPolicy()
 	if err != nil {
 		return DeployFailed, err
@@ -168,11 +180,34 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 		}
 	}
 
+	if setup != nil {
+		setup(pod)
+	}
+
 	duplicateRequest := false
 	if _, err := in.cli.CoreV1().Pods(in.namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		return DeployFailed, err
 	} else if errors.IsAlreadyExists(err) {
-		duplicateRequest = true
+		// A pod with this name already exists. If it is in a terminal state
+		// (Completed or Failed) from a previous run, delete it and recreate —
+		// the caller wants a fresh pod. If it is still running, treat this as
+		// an idempotent duplicate request and wait on the existing pod.
+		existing, getErr := in.cli.CoreV1().Pods(in.namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
+		if getErr == nil && isPodTerminal(existing) {
+			_ = in.cli.CoreV1().Pods(in.namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
+			for i := 0; i < in.timeOut; i++ {
+				_, getErr = in.cli.CoreV1().Pods(in.namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
+				if errors.IsNotFound(getErr) {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+			if _, err = in.cli.CoreV1().Pods(in.namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+				return DeployFailed, err
+			}
+		} else {
+			duplicateRequest = true
+		}
 	}
 
 	if tainr.HasVolumes() || tainr.HasPreArchives() {
@@ -416,6 +451,12 @@ func (in *instance) getAnnotations(annotations map[string]string, tainr *types.C
 	return annotations
 }
 
+// isPodTerminal returns true when a pod has already completed or failed and
+// will never transition back to a running state.
+func isPodTerminal(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+}
+
 // getPodMatchLabels will return the map of labels that can be used to
 // match running pods for this container.
 func (in *instance) getPodMatchLabels(tainr *types.Container) map[string]string {
@@ -633,6 +674,72 @@ func (in *instance) addPreArchives(tainr *types.Container, pod *corev1.Pod) erro
 	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, mounts...)
 
 	return nil
+}
+
+// addInspectionTools injects a static busybox binary into the pod so that
+// the main container's entrypoint can be safely overridden with a sleep,
+// keeping the pod alive for docker cp / exec regardless of what the image
+// contains.
+//
+// The kubedock image is based on busybox:latest, so /bin/busybox is always
+// present there. An init container copies it to a shared emptyDir at
+// /opt/kubedock/ and creates sh/tar/sleep symlinks so that kubedock's
+// exec-based file operations (FileExistsInContainer, CopyFromContainer) work
+// even on distroless images that don't ship those binaries. The main
+// container's command is then replaced with "sleep infinity".
+func (in *instance) addInspectionTools(pod *corev1.Pod) {
+	const (
+		volumeName = "kubedock-tools"
+		mountPath  = "/opt/kubedock"
+		busyboxDst = "/opt/kubedock/busybox"
+	)
+
+	volumeSource := corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}}
+	volumeMount := corev1.VolumeMount{Name: volumeName, MountPath: mountPath}
+
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name:         volumeName,
+		VolumeSource: volumeSource,
+	})
+
+	// Init container: copy busybox and create applet symlinks so exec-based
+	// file operations (sh, tar) and the sleep entrypoint find them via PATH
+	// even on distroless images that don't ship these binaries.
+	ic := in.containerTemplate
+	ic.Name  = "kubedock-tools"
+	ic.Image = in.initImage
+	ic.VolumeMounts = []corev1.VolumeMount{volumeMount}
+	ic.Command = []string{"/bin/busybox"}
+	ic.Args = []string{
+		"sh", "-c",
+		fmt.Sprintf(`cp "/bin/busybox" "%s" && for f in sh tar sleep; do ln -sf busybox "%s/$f"; done`, busyboxDst, mountPath),
+	}
+
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, ic)
+
+	// Mount the tools volume in the main container and override the entrypoint.
+	// Use absolute paths to avoid PATH lookup issues on distroless images whose
+	// image-defined PATH may shadow the pod spec PATH env var at exec time.
+	// "tail -f /dev/null" blocks indefinitely on an inotify wait and cannot
+	// exit naturally, making it the most reliable "sleep forever" idiom.
+	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, volumeMount)
+	pod.Spec.Containers[0].Command = []string{busyboxDst, "tail", "-f", "/dev/null"}
+	pod.Spec.Containers[0].Args = nil
+
+	// Prepend the tools directory to PATH so sh/tar applets are found when
+	// exec'd into the container via the Kubernetes exec API.
+	found := false
+	for i, e := range pod.Spec.Containers[0].Env {
+		if e.Name == "PATH" {
+			pod.Spec.Containers[0].Env[i].Value = fmt.Sprintf("%s:%s", mountPath, e.Value)
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "PATH", Value: mountPath})
+	}
 }
 
 // addDindSidecar will add a docker-in-docker sidecar, adding a volume

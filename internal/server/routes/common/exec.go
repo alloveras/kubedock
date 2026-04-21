@@ -110,6 +110,11 @@ func ExecStart(cr *ContextRouter, c *gin.Context) {
 		return
 	}
 
+	if err := StartInspectionContainer(cr, tainr); err != nil {
+		httputil.Error(c, http.StatusInternalServerError, err)
+		return
+	}
+
 	if req.Detach {
 		go func() {
 			code, err := cr.Backend.ExecContainer(tainr, exec, nil, io.Discard)
