@@ -75,6 +75,6 @@ func RegisterDockerRoutes(router *gin.Engine, cr *common.ContextRouter) {
 	router.GET("/volumes/:id", httputil.NotImplemented)
 	router.DELETE("/volumes/:id", httputil.NotImplemented)
 	router.POST("/volumes/create", httputil.NotImplemented)
-	router.POST("/images/load", httputil.NotImplemented)
+	router.POST("/images/load", wrap(common.ImageLoad))
 	router.POST("/images/:image/*tag", httputil.NotImplemented)
 }

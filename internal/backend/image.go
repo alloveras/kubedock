@@ -1,15 +1,18 @@
 package backend
 
 import (
+	godigest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"github.com/joyrex2001/kubedock/internal/util/image"
 )
 
-// GetImageExposedPorts will inspect the image in the registry and return the
-// configured exposed ports from the image, or will return an error if failed.
-func (in *instance) GetImageExposedPorts(img string) (map[string]struct{}, error) {
-	cfg, err := image.InspectConfig("docker://" + img)
+// InspectImage fetches the image config from the registry and returns the
+// config digest (Docker/OCI image ID) and the full OCI image config.
+func (in *instance) InspectImage(img string) (godigest.Digest, ocispec.ImageConfig, error) {
+	digest, cfg, err := image.InspectConfig("docker://" + img)
 	if err != nil {
-		return nil, err
+		return "", ocispec.ImageConfig{}, err
 	}
-	return cfg.Config.ExposedPorts, nil
+	return digest, cfg.Config, nil
 }

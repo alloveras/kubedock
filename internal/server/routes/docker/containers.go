@@ -57,11 +57,15 @@ func ContainerCreate(cr *common.ContextRouter, c *gin.Context) {
 		OpenStdin:    in.OpenStdin,
 	}
 
-	if img, err := cr.DB.GetImageByNameOrID(in.Image); err != nil {
+	if img, err := cr.DB.GetImageByNameOrID(common.NormalizeImageRef(in.Image, cr.Config.RegistryAddr)); err != nil {
 		klog.Warningf("unable to fetch image details: %s", err)
 	} else {
-		for pp := range img.ExposedPorts {
+		for pp := range img.Config.ExposedPorts {
 			tainr.ImagePorts[pp] = pp
+		}
+		if img.RegistryRef != "" {
+			klog.Infof("resolving image %s to registry ref %s", in.Image, img.RegistryRef)
+			tainr.Image = img.RegistryRef
 		}
 	}
 

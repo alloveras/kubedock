@@ -85,9 +85,7 @@ func Events(cr *common.ContextRouter, c *gin.Context) {
 					"Type":   msg.Type,
 					"Status": msg.Action,
 					"Action": msg.Action,
-					"Actor": gin.H{
-						"ID": msg.ID,
-					},
+					"Actor": gin.H{ "ID": msg.ID },
 					"scope":    "local",
 					"time":     msg.Time,
 					"timeNano": msg.TimeNano,

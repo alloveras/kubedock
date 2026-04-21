@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"time"
 
+	godigest "github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -34,7 +36,7 @@ type Backend interface {
 	ExecContainer(*types.Container, *types.Exec, io.Reader, io.Writer) (int, error)
 	GetLogs(*types.Container, *LogOptions, chan struct{}, io.Writer) error
 	GetLogsRaw(*types.Container, *LogOptions, chan struct{}, io.Writer) error
-	GetImageExposedPorts(string) (map[string]struct{}, error)
+	InspectImage(string) (godigest.Digest, ocispec.ImageConfig, error)
 }
 
 // instance is the internal representation of the Backend object.
