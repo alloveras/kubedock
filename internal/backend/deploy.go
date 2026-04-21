@@ -74,16 +74,16 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 	pod.ObjectMeta.Annotations = in.getAnnotations(pod.ObjectMeta.Annotations, tainr)
 
 	if tainr.Hostname == "" {
-		pod.ObjectMeta.Annotations["kubedock.hostalias/0"] = tainr.GetPodName()
+		pod.ObjectMeta.Annotations[config.HostAliasAnnotationPrefix+"0"] = tainr.GetPodName()
 	} else {
-		pod.ObjectMeta.Annotations["kubedock.hostalias/0"] = tainr.Hostname
+		pod.ObjectMeta.Annotations[config.HostAliasAnnotationPrefix+"0"] = tainr.Hostname
 	}
 	for i, hostname := range tainr.NetworkAliases {
-		pod.ObjectMeta.Annotations[fmt.Sprintf("kubedock.hostalias/%d", i+1)] = hostname
+		pod.ObjectMeta.Annotations[fmt.Sprintf("%s%d", config.HostAliasAnnotationPrefix, i+1)] = hostname
 	}
 	inetwork := 0
 	for network := range tainr.Networks {
-		pod.ObjectMeta.Annotations[fmt.Sprintf("kubedock.network/%d", inetwork)] = network
+		pod.ObjectMeta.Annotations[fmt.Sprintf("%s%d", config.NetworkAnnotationPrefix, inetwork)] = network
 		inetwork++
 	}
 
@@ -140,6 +140,11 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 		return DeployFailed, err
 	}
 	pod.Spec.SecurityContext = seccontext
+
+	if in.dnsConfig != nil {
+		pod.Spec.DNSPolicy = corev1.DNSNone
+		pod.Spec.DNSConfig = in.dnsConfig
+	}
 
 	for _, ps := range in.imagePullSecrets {
 		pod.Spec.ImagePullSecrets = append(pod.Spec.ImagePullSecrets, corev1.LocalObjectReference{Name: ps})
