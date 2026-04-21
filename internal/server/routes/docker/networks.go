@@ -105,11 +105,6 @@ func NetworksDelete(cr *common.ContextRouter, c *gin.Context) {
 		return
 	}
 
-	if len(getContainersInNetwork(cr, netw)) != 0 {
-		httputil.Error(c, http.StatusForbidden, fmt.Errorf("cannot delete network, containers attachd"))
-		return
-	}
-
 	if err := cr.DB.DeleteNetwork(netw); err != nil {
 		httputil.Error(c, http.StatusNotFound, err)
 		return
