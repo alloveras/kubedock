@@ -39,7 +39,7 @@ func (in *instance) CopyToContainer(tainr *types.Container, reader io.Reader, ta
 		RestConfig: in.cfg,
 		Pod:        *pod,
 		Container:  "main",
-		Cmd:        []string{"tar", "-x" + cmpflag + "f", "-", "-C", target},
+		Cmd:        []string{toolsTar, "-x" + cmpflag + "f", "-", "-C", target},
 		Stdin:      reader,
 	})
 }
@@ -60,7 +60,7 @@ func (in *instance) CopyFromContainer(tainr *types.Container, target string, wri
 		RestConfig: in.cfg,
 		Pod:        *pod,
 		Container:  "main",
-		Cmd:        []string{"tar", "-cf", "-", "-C", path.Dir(target), path.Base(target)},
+		Cmd:        []string{toolsTar, "-cf", "-", "-C", path.Dir(target), path.Base(target)},
 		Stdout:     writer,
 	})
 }
@@ -81,7 +81,7 @@ func (in *instance) GetFileModeInContainer(tainr *types.Container, target string
 		RestConfig: in.cfg,
 		Pod:        *pod,
 		Container:  "main",
-		Cmd:        []string{"sh", "-c", "if [ -d \"" + sanitizeFilename(target) + "\" ]; then echo folder; else echo file; fi"},
+		Cmd:        []string{toolsSh, "-c", "if [ -d \"" + sanitizeFilename(target) + "\" ]; then echo folder; else echo file; fi"},
 		Stdout:     writer,
 	})
 	if err != nil {
@@ -111,7 +111,7 @@ func (in *instance) FileExistsInContainer(tainr *types.Container, target string)
 		RestConfig: in.cfg,
 		Pod:        *pod,
 		Container:  "main",
-		Cmd:        []string{"sh", "-c", "if [ -e \"" + sanitizeFilename(target) + "\" ]; then echo true; else echo false; fi"},
+		Cmd:        []string{toolsSh, "-c", "if [ -e \"" + sanitizeFilename(target) + "\" ]; then echo true; else echo false; fi"},
 		Stdout:     writer,
 	})
 

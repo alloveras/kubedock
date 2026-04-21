@@ -43,10 +43,40 @@ const (
 	SetupInitContainerName = "setup"
 )
 
+// kubedock injects a static busybox into every container at toolsDir via an init
+// container, so its exec-based file operations (CopyToContainer, CopyFromContainer,
+// FileExistsInContainer) and the inspection keep-alive work on any image, including
+// distroless ones that ship no shell. Tools are always addressed by these absolute
+// paths so they never depend on the container's PATH (and the image's PATH is left
+// untouched, so exec'd command tests resolve the image's own binaries).
+const (
+	toolsVolumeName = "kubedock-tools"
+	toolsDir        = "/opt/kubedock"
+	toolsBusybox    = toolsDir + "/busybox"
+	toolsSh         = toolsDir + "/sh"
+	toolsTar        = toolsDir + "/tar"
+)
+
 // StartContainer will start given container object in kubernetes and
 // waits until it's started, or failed with an error.
 func (in *instance) StartContainer(tainr *types.Container) (DeployState, error) {
-	state, err := in.startContainer(tainr)
+	return in.startContainerWithSetup(tainr, nil)
+}
+
+// StartContainerForInspection starts the container with its entrypoint overridden
+// by the injected busybox sleep, so the pod stays alive for docker cp / exec
+// regardless of what the image contains. Intended for tools like
+// container_structure_test. The override targets the main container only —
+// overriding a sidecar's entrypoint (e.g. dind) would break it.
+func (in *instance) StartContainerForInspection(tainr *types.Container) (DeployState, error) {
+	return in.startContainerWithSetup(tainr, func(pod *corev1.Pod) {
+		pod.Spec.Containers[0].Command = []string{toolsBusybox, "sleep", "infinity"}
+		pod.Spec.Containers[0].Args = nil
+	})
+}
+
+func (in *instance) startContainerWithSetup(tainr *types.Container, setup func(*corev1.Pod)) (DeployState, error) {
+	state, err := in.startContainer(tainr, setup)
 	if state == DeployFailed {
 		if klog.V(2) {
 			klog.Infof("container %s log output:", tainr.ShortID)
@@ -61,7 +91,7 @@ func (in *instance) StartContainer(tainr *types.Container) (DeployState, error) 
 	return state, err
 }
 
-func (in *instance) startContainer(tainr *types.Container) (DeployState, error) {
+func (in *instance) startContainer(tainr *types.Container, setup func(*corev1.Pod)) (DeployState, error) {
 	pulpol, err := tainr.GetImagePullPolicy()
 	if err != nil {
 		return DeployFailed, err
@@ -124,6 +154,16 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 
 	pod.Spec.Containers = []corev1.Container{container}
 
+	// Inject kubedock's busybox tooling into the main container so file operations
+	// work on any image. Done here, before any sidecar is prepended, so the main
+	// container is unambiguously Containers[0] — including for the inspection
+	// setup hook below, which overrides the main container's entrypoint.
+	in.addTools(pod)
+
+	if setup != nil {
+		setup(pod)
+	}
+
 	if tainr.Hostname != "" {
 		pod.Spec.Hostname = tainr.Hostname
 	}
@@ -175,7 +215,26 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 	if _, err := in.cli.CoreV1().Pods(in.namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil && !errors.IsAlreadyExists(err) {
 		return DeployFailed, err
 	} else if errors.IsAlreadyExists(err) {
-		duplicateRequest = true
+		// A pod with this name already exists. If it is in a terminal state
+		// (Completed or Failed) from a previous run, delete it and recreate —
+		// the caller wants a fresh pod. If it is still running, treat this as
+		// an idempotent duplicate request and wait on the existing pod.
+		existing, getErr := in.cli.CoreV1().Pods(in.namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
+		if getErr == nil && isPodTerminal(existing) {
+			_ = in.cli.CoreV1().Pods(in.namespace).Delete(context.Background(), pod.Name, metav1.DeleteOptions{})
+			for i := 0; i < in.timeOut; i++ {
+				_, getErr = in.cli.CoreV1().Pods(in.namespace).Get(context.Background(), pod.Name, metav1.GetOptions{})
+				if errors.IsNotFound(getErr) {
+					break
+				}
+				time.Sleep(time.Second)
+			}
+			if _, err = in.cli.CoreV1().Pods(in.namespace).Create(context.Background(), pod, metav1.CreateOptions{}); err != nil {
+				return DeployFailed, err
+			}
+		} else {
+			duplicateRequest = true
+		}
 	}
 
 	if tainr.HasVolumes() || tainr.HasPreArchives() {
@@ -419,6 +478,12 @@ func (in *instance) getAnnotations(annotations map[string]string, tainr *types.C
 	return annotations
 }
 
+// isPodTerminal returns true when a pod has already completed or failed and
+// will never transition back to a running state.
+func isPodTerminal(pod *corev1.Pod) bool {
+	return pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
+}
+
 // getPodMatchLabels will return the map of labels that can be used to
 // match running pods for this container.
 func (in *instance) getPodMatchLabels(tainr *types.Container) map[string]string {
@@ -636,6 +701,43 @@ func (in *instance) addPreArchives(tainr *types.Container, pod *corev1.Pod) erro
 	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, mounts...)
 
 	return nil
+}
+
+// addTools injects a static busybox binary into the pod via an init container,
+// mounted at toolsDir on the main container, so kubedock's exec-based file
+// operations (CopyToContainer, CopyFromContainer, FileExistsInContainer) and the
+// inspection keep-alive can use it on any image — including distroless ones that
+// ship no shell. It is applied to every container kubedock creates, so those
+// operations never depend on the image happening to provide sh/tar.
+//
+// The kubedock image uses busybox:musl (statically linked), so /bin/busybox is
+// always present and works in any Linux container, including distroless images
+// without libc. The applets are addressed by absolute path (toolsSh, toolsTar,
+// toolsBusybox); the container's PATH is deliberately left untouched so exec'd
+// command tests resolve the image's own binaries.
+//
+// Called before any sidecar is prepended, so Containers[0] is still the main
+// container at this point.
+func (in *instance) addTools(pod *corev1.Pod) {
+	volumeMount := corev1.VolumeMount{Name: toolsVolumeName, MountPath: toolsDir}
+
+	pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{
+		Name:         toolsVolumeName,
+		VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+	})
+
+	ic := in.containerTemplate
+	ic.Name = toolsVolumeName
+	ic.Image = in.initImage
+	ic.VolumeMounts = []corev1.VolumeMount{volumeMount}
+	ic.Command = []string{"/bin/busybox"}
+	ic.Args = []string{
+		"sh", "-c",
+		fmt.Sprintf(`cp "/bin/busybox" "%s" && for f in sh tar sleep; do ln -sf busybox "%s/$f"; done`, toolsBusybox, toolsDir),
+	}
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, ic)
+
+	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, volumeMount)
 }
 
 // addDindSidecar will add a docker-in-docker sidecar, adding a volume
