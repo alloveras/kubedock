@@ -669,8 +669,7 @@ func (in *instance) handleDindCompleted(tainr *types.Container) error {
 			if event.Type == watch.Modified {
 				status, err := in.GetContainerStatus(tainr)
 				if err != nil {
-					klog.Errorf("error getting container status: %s", err)
-					return
+					klog.V(3).Infof("container status error (container likely exited): %s", err)
 				}
 				if status != DeployPending && status != DeployRunning {
 					if err := in.touchFileInContainer(tainr, "dind-sidecar", "/var/run/shutdown"); err != nil {
