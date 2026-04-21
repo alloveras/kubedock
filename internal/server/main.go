@@ -82,8 +82,6 @@ func (s *Server) getGinEngine() *gin.Engine {
 	router := gin.New()
 	router.Use(httputil.VersionAliasMiddleware(router))
 	router.Use(gin.Logger())
-	router.Use(httputil.RequestLoggerMiddleware())
-	router.Use(httputil.ResponseLoggerMiddleware())
 	router.Use(gin.Recovery())
 
 	insp := viper.GetBool("registry.inspector")

@@ -65,20 +65,6 @@ func CloseStreams(streams ...interface{}) {
 	}
 }
 
-// RequestLoggerMiddleware is a gin-gonic middleware that will log the
-// raw request.
-func RequestLoggerMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		var buf bytes.Buffer
-		tee := io.TeeReader(c.Request.Body, &buf)
-		body, _ := io.ReadAll(tee)
-		c.Request.Body = io.NopCloser(&buf)
-		klog.V(5).Infof("Request Headers: %#v", c.Request.Header)
-		klog.V(4).Infof("Request Body: %s", string(body))
-		c.Next()
-	}
-}
-
 // reponseWriter is the writer interface used by the ResponseLoggerMiddleware
 type reponseWriter struct {
 	gin.ResponseWriter
@@ -89,16 +75,6 @@ type reponseWriter struct {
 func (w reponseWriter) Write(b []byte) (int, error) {
 	w.body.Write(b)
 	return w.ResponseWriter.Write(b)
-}
-
-// ResponseLoggerMiddleware is a gin-gonic middleware that will the raw response.
-func ResponseLoggerMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		w := &reponseWriter{body: bytes.NewBufferString(""), ResponseWriter: c.Writer}
-		c.Writer = w
-		c.Next()
-		klog.V(4).Infof("Response Body: %s", w.body.String())
-	}
 }
 
 // VersionAliasMiddleware is a gin-gonic middleware that will remove /v1.xx
