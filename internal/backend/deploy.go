@@ -90,8 +90,20 @@ func (in *instance) startContainer(tainr *types.Container) (DeployState, error) 
 	container := in.containerTemplate
 	container.Image = tainr.Image
 	container.Name = "main"
-	container.Command = tainr.Entrypoint
-	container.Args = tainr.Cmd
+	// In some cases, Docker clients clear an image's entrypoint by sending Entrypoint: [""] promoting Cmd
+	// as the full command with no entrypoint prefix.
+	//
+	// Kubernetes has no direct equivalent. Setting Command: [""] tries to exec an empty-string binary,
+	// while leaving Command nil makes Kubernetes fall back to the image's own ENTRYPOINT and append Args
+	// to it. To emulate Docker, promote Cmd to Command so it is exec'd directly, bypassing the image
+	// ENTRYPOINT, and clear Args.
+	if len(tainr.Entrypoint) == 1 && tainr.Entrypoint[0] == "" {
+		container.Command = tainr.Cmd
+		container.Args = nil
+	} else {
+		container.Command = tainr.Entrypoint
+		container.Args = tainr.Cmd
+	}
 	container.Env = tainr.GetEnvVar()
 	container.Ports = in.getContainerPorts(tainr)
 	container.ImagePullPolicy = pulpol

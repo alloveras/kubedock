@@ -299,6 +299,77 @@ func TestStartContainer(t *testing.T) {
 	}
 }
 
+func TestStartContainerEntrypointCmd(t *testing.T) {
+	// Force the main container to report Completed so StartContainer returns
+	// without polling; we only care about the pod spec it produced.
+	pt := &corev1.Pod{Status: corev1.PodStatus{
+		ContainerStatuses: []corev1.ContainerStatus{
+			{Name: "main", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "Completed"}}},
+		},
+	}}
+	tests := []struct {
+		name        string
+		entrypoint  []string
+		cmd         []string
+		wantCommand []string
+		wantArgs    []string
+	}{
+		{
+			// Normal case: no entrypoint override. Cmd is appended to the image's
+			// own ENTRYPOINT (Command nil => image entrypoint used by Kubernetes).
+			name:        "no entrypoint override",
+			entrypoint:  nil,
+			cmd:         []string{"serve"},
+			wantCommand: nil,
+			wantArgs:    []string{"serve"},
+		},
+		{
+			// Explicit entrypoint: used verbatim, Cmd becomes args.
+			name:        "explicit entrypoint",
+			entrypoint:  []string{"/bin/myapp"},
+			cmd:         []string{"--flag"},
+			wantCommand: []string{"/bin/myapp"},
+			wantArgs:    []string{"--flag"},
+		},
+		{
+			// Cleared entrypoint (container_structure_test command tests): Cmd must
+			// be promoted to Command so it is exec'd directly, bypassing the image
+			// ENTRYPOINT, and Args must be cleared.
+			name:        "cleared entrypoint promotes cmd",
+			entrypoint:  []string{""},
+			cmd:         []string{"bash", "--version"},
+			wantCommand: []string{"bash", "--version"},
+			wantArgs:    nil,
+		},
+	}
+	for i, tst := range tests {
+		kub := &instance{
+			namespace:   "default",
+			cli:         fake.NewSimpleClientset(),
+			podTemplate: pt,
+			timeOut:     10,
+		}
+		in := &types.Container{ID: "rc752", ShortID: "tb303", Name: "f1spirit", Entrypoint: tst.entrypoint, Cmd: tst.cmd}
+		if _, err := kub.StartContainer(in); err != nil {
+			t.Errorf("%s (test %d) - unexpected error %s", tst.name, i, err)
+			continue
+		}
+		o, err := kub.cli.(*fake.Clientset).Tracker().Get(schema.GroupVersionResource{Version: "v1", Resource: "pods"}, "default", "kubedock-f1spirit-tb303")
+		if err != nil {
+			t.Errorf("%s (test %d) - unexpected error fetching pod %s", tst.name, i, err)
+			continue
+		}
+		pod := o.(*corev1.Pod)
+		got := pod.Spec.Containers[0]
+		if !reflect.DeepEqual(got.Command, tst.wantCommand) {
+			t.Errorf("%s (test %d) - expected Command %v but got %v", tst.name, i, tst.wantCommand, got.Command)
+		}
+		if !reflect.DeepEqual(got.Args, tst.wantArgs) {
+			t.Errorf("%s (test %d) - expected Args %v but got %v", tst.name, i, tst.wantArgs, got.Args)
+		}
+	}
+}
+
 func TestStartContainerAddsActiveDeadlineSeconds(t *testing.T) {
 	// need to force the pod status or StartContainer will return state=DeployFailed
 	pt := &corev1.Pod{Status: corev1.PodStatus{
