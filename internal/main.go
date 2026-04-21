@@ -99,6 +99,11 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 	podtmpl := viper.GetString("kubernetes.pod-template")
 	imgpsr := strings.ReplaceAll(viper.GetString("kubernetes.image-pull-secrets"), " ", "")
 	dissvcs := viper.GetBool("disable-services")
+	dnsServer := viper.GetString("kubernetes.dns-server")
+
+	if dnsServer != "" && !dissvcs {
+		return nil, fmt.Errorf("--dns-server requires --disable-services: using a DNS server for hostname resolution while still creating services will cause conflicts")
+	}
 
 	optlog := ""
 	imgps := []string{}
@@ -116,7 +121,7 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 	if err != nil {
 		return nil, err
 	}
-	klog.V(3).Infof("kubedock url: %s", kuburl)
+	klog.V(3).Infof("kubedock url (used for dind sidecars): %s", kuburl)
 
 	return backend.New(backend.Config{
 		Client:           cli,
@@ -130,6 +135,7 @@ func getBackend(cfg *rest.Config, cli kubernetes.Interface) (backend.Backend, er
 		KubedockURL:      kuburl,
 		TimeOut:          timeout,
 		DisableServices:  dissvcs,
+		DNSServer:        dnsServer,
 	})
 }
 
