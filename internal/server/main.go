@@ -143,6 +143,11 @@ func (s *Server) getGinEngine() *gin.Engine {
 	pollRate := viper.GetFloat64("server.poll-rate")
 	pollBurst := viper.GetInt("server.poll-burst")
 
+	regaddr := viper.GetString("registry.load-addr")
+	if regaddr != "" {
+		klog.Infof("CAS registry for image loading: %s", regaddr)
+	}
+
 	klog.Infof("using namespace: %s", viper.GetString("kubernetes.namespace"))
 
 	cr, err := common.NewContextRouter(s.kub, common.Config{
@@ -161,6 +166,7 @@ func (s *Server) getGinEngine() *gin.Engine {
 		IgnoreContainerMemory: icm,
 		PollRate:              pollRate,
 		PollBurst:             pollBurst,
+		RegistryAddr:          regaddr,
 	})
 	if err != nil {
 		klog.Errorf("error setting up context: %s", err)

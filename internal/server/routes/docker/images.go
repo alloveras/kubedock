@@ -4,6 +4,7 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
+	godigest "github.com/opencontainers/go-digest"
 
 	"github.com/joyrex2001/kubedock/internal/events"
 	"github.com/joyrex2001/kubedock/internal/model/types"
@@ -20,14 +21,23 @@ func ImageCreate(cr *common.ContextRouter, c *gin.Context) {
 	if tag != "" {
 		from = from + ":" + tag
 	}
+	// Normalize to canonical form so lookups in ImageJSON and ContainerCreate
+	// always find the entry regardless of how the caller spelled the name.
+	from = common.NormalizeImageRef(from, cr.Config.RegistryAddr)
 	img := &types.Image{Name: from}
 	if cr.Config.Inspector {
-		pts, err := cr.Backend.GetImageExposedPorts(from)
+		digest, cfg, err := cr.Backend.InspectImage(from)
 		if err != nil {
 			httputil.Error(c, http.StatusInternalServerError, err)
 			return
 		}
-		img.ExposedPorts = pts
+		img.ID = digest.String()
+		img.ShortID = digest.Hex()[:12]
+		img.Config = cfg
+	} else {
+		syntheticDigest := godigest.FromBytes([]byte(from))
+		img.ID = syntheticDigest.String()
+		img.ShortID = syntheticDigest.Hex()[:12]
 	}
 	if err := cr.DB.SaveImage(img); err != nil {
 		httputil.Error(c, http.StatusInternalServerError, err)

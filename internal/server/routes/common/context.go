@@ -49,6 +49,9 @@ type Config struct {
 	// PollBurst defines the maximum burst of poll requests towards the backend.
 	// Defaults to DefaultPollBurst if zero.
 	PollBurst int
+	// RegistryAddr is the hostname of the CAS-backed OCI registry used for image loading.
+	// When set, POST /images/load pushes the manifest there and records the registry ref.
+	RegistryAddr string
 }
 
 // ContextRouter is the object that contains shared context for the kubedock API endpoints.

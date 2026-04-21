@@ -69,6 +69,7 @@ func init() {
 	serverCmd.PersistentFlags().Int("kube-api-burst", 0, "Maximum burst for requests to the Kubernetes API (0 uses client default)")
 	serverCmd.PersistentFlags().Float64("poll-rate", 0, "Maximum polling requests per second towards the backend (0 uses default of 1)")
 	serverCmd.PersistentFlags().Int("poll-burst", 0, "Maximum burst of poll requests towards the backend (0 uses default of 3)")
+	serverCmd.PersistentFlags().String("registry-addr", "", "Hostname of the CAS-backed OCI registry (e.g. kubedock-registry.example.com). When set, POST /images/load pushes manifests there instead of returning 501.")
 
 	viper.BindPFlag("server.listen-addr", serverCmd.PersistentFlags().Lookup("listen-addr"))
 	viper.BindPFlag("server.socket", serverCmd.PersistentFlags().Lookup("unix-socket"))
@@ -105,6 +106,8 @@ func init() {
 	viper.BindPFlag("kubernetes.burst", serverCmd.PersistentFlags().Lookup("kube-api-burst"))
 	viper.BindPFlag("server.poll-rate", serverCmd.PersistentFlags().Lookup("poll-rate"))
 	viper.BindPFlag("server.poll-burst", serverCmd.PersistentFlags().Lookup("poll-burst"))
+	viper.BindPFlag("registry.load-addr", serverCmd.PersistentFlags().Lookup("registry-addr"))
+	viper.BindEnv("registry.load-addr", "REGISTRY_ADDR")
 
 	viper.BindEnv("server.listen-addr", "SERVER_LISTEN_ADDR")
 	viper.BindEnv("server.tls-enable", "SERVER_TLS_ENABLE")

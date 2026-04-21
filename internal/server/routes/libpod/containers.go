@@ -84,7 +84,7 @@ func ContainerCreate(cr *common.ContextRouter, c *gin.Context) {
 	if img, err := cr.DB.GetImageByNameOrID(in.Image); err != nil {
 		klog.Warningf("unable to fetch image details: %s", err)
 	} else {
-		for pp := range img.ExposedPorts {
+		for pp := range img.Config.ExposedPorts {
 			tainr.ImagePorts[pp] = pp
 		}
 	}

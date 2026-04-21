@@ -423,6 +423,8 @@ func (in *Database) SaveImage(img *types.Image) error {
 		id := stringid.GenerateRandomID()
 		img.ID = id
 		img.ShortID = stringid.TruncateID(id)
+	}
+	if img.Created.IsZero() {
 		img.Created = time.Now()
 	}
 	return in.save("image", img)
