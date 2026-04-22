@@ -681,8 +681,9 @@ func (in *instance) addPreArchives(tainr *types.Container, pod *corev1.Pod) erro
 // keeping the pod alive for docker cp / exec regardless of what the image
 // contains.
 //
-// The kubedock image is based on busybox:latest, so /bin/busybox is always
-// present there. An init container copies it to a shared emptyDir at
+// The kubedock image uses busybox:musl (statically linked), so /bin/busybox
+// is always present and works in any Linux container, including distroless
+// images without libc. An init container copies it to a shared emptyDir at
 // /opt/kubedock/ and creates sh/tar/sleep symlinks so that kubedock's
 // exec-based file operations (FileExistsInContainer, CopyFromContainer) work
 // even on distroless images that don't ship those binaries. The main
@@ -718,12 +719,9 @@ func (in *instance) addInspectionTools(pod *corev1.Pod) {
 	pod.Spec.InitContainers = append(pod.Spec.InitContainers, ic)
 
 	// Mount the tools volume in the main container and override the entrypoint.
-	// Use absolute paths to avoid PATH lookup issues on distroless images whose
-	// image-defined PATH may shadow the pod spec PATH env var at exec time.
-	// "tail -f /dev/null" blocks indefinitely on an inotify wait and cannot
-	// exit naturally, making it the most reliable "sleep forever" idiom.
+	// Use absolute paths to avoid PATH lookup issues on distroless images.
 	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, volumeMount)
-	pod.Spec.Containers[0].Command = []string{busyboxDst, "tail", "-f", "/dev/null"}
+	pod.Spec.Containers[0].Command = []string{busyboxDst, "sleep", "infinity"}
 	pod.Spec.Containers[0].Args = nil
 
 	// Prepend the tools directory to PATH so sh/tar applets are found when
