@@ -24,14 +24,42 @@ import (
 // NormalizeImageRef returns the canonical form of an image reference, matching
 // how Docker itself normalizes names before storing them locally.
 //
-// Docker Hub normalization is applied via the distribution reference package
-// (the same library Docker itself uses):
+// For bazel/ images when --registry-addr is configured, the CAS registry hostname
+// is prepended (e.g. "bazel/foo/bar:tag" → "registryAddr/bazel/foo/bar:tag").
+// This must be handled before Docker normalization because "bazel" has no dots or
+// colons and would otherwise be misinterpreted as a Docker Hub path component.
+//
+// For cst.oci.local/ images, the fake registry hostname is replaced with the real
+// CAS registry address and the tag is converted to a digest reference. CST uses
+// "cst.oci.local/sha256-<hex>:sha256-<hex>" as a synthetic tag where both the
+// path component and the tag encode the manifest digest (with "-" instead of ":").
+// The manifest is pushed to registryAddr under the same path, so this transform
+// produces the exact digest-pinned URL that Kubernetes can pull:
+//
+//	cst.oci.local/sha256-<hex>:sha256-<hex> → registryAddr/cst.oci.local/sha256-<hex>@sha256:<hex>
+//
+// For all other images, Docker Hub normalization is applied via the distribution
+// reference package (the same library Docker itself uses):
 //   - missing registry defaults to docker.io
 //   - single-component names get the library/ prefix (e.g. "postgres" → "docker.io/library/postgres")
 //   - missing tag defaults to :latest
 //
 // If the name cannot be parsed it is returned unchanged.
 func NormalizeImageRef(name, registryAddr string) string {
+	if strings.HasPrefix(name, "bazel/") {
+		if registryAddr != "" {
+			return registryAddr + "/" + name
+		}
+		return name
+	}
+	if strings.HasPrefix(name, "cst.oci.local/") && registryAddr != "" {
+		rest := strings.TrimPrefix(name, "cst.oci.local/")
+		if i := strings.LastIndex(rest, ":"); i >= 0 {
+			repo := rest[:i]
+			digest := strings.Replace(rest[i+1:], "-", ":", 1)
+			return fmt.Sprintf("%s/cst.oci.local/%s@%s", registryAddr, repo, digest)
+		}
+	}
 	ref, err := reference.ParseNormalizedNamed(name)
 	if err != nil {
 		return name
