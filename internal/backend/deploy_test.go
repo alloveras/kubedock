@@ -754,7 +754,16 @@ func TestAddVolumes(t *testing.T) {
 		{in: &types.Container{}, count: 0},
 		{in: &types.Container{Binds: []string{".:/remote:rw"}}, count: 1},
 		{in: &types.Container{Binds: []string{".:/remote:rw", "deploy_test.go:/tmp/gogo.go"}}, count: 2},
-		{in: &types.Container{Binds: []string{".:/remote:rw", "xxx:/tmp/gogo.go"}}, count: 1},
+		// The "xxx" path does not exist in the daemon's filesystem (cannot be stat'd). We map Docker's
+		// -v behaviour and still create a writable mount point inside the container at the given
+		// destination path, rather than dropping the bind.
+		//
+		// > "If you use --volume to bind-mount a file or directory that does not yet exist on the Docker
+		// > host, Docker automatically creates the directory on the host for you. It's always created as
+		// > a directory."
+		//
+		// See: https://docs.docker.com/engine/storage/bind-mounts/
+		{in: &types.Container{Binds: []string{".:/remote:rw", "xxx:/tmp/gogo.go"}}, count: 2},
 	}
 
 	for i, tst := range tests {
@@ -810,6 +819,33 @@ func TestAddVolumesAndPreArchives(t *testing.T) {
 		if count != tst.count {
 			t.Errorf("failed test %d - expected %d volume, but got %d", i, tst.count, count)
 		}
+	}
+}
+
+func TestAddVolumesPreservesInitContainers(t *testing.T) {
+	// addTools appends a tools-injector init container before addVolumes runs.
+	// addVolumes must preserve it; otherwise the main container's injected
+	// busybox is never copied and the container fails to start.
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{
+			Containers:     []corev1.Container{{}},
+			InitContainers: []corev1.Container{{Name: toolsVolumeName}},
+		},
+	}
+	kub := &instance{cli: fake.NewSimpleClientset()}
+	if err := kub.addVolumes(&types.Container{Binds: []string{".:/remote:rw"}}, pod); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	names := map[string]bool{}
+	for _, ic := range pod.Spec.InitContainers {
+		names[ic.Name] = true
+	}
+	if !names[toolsVolumeName] {
+		t.Errorf("expected the %q init container to be preserved, got %v", toolsVolumeName, names)
+	}
+	if !names[SetupInitContainerName] {
+		t.Errorf("expected the %q init container to be added, got %v", SetupInitContainerName, names)
 	}
 }
 

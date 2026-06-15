@@ -193,6 +193,12 @@ func (in *instance) startContainer(tainr *types.Container, setup func(*corev1.Po
 		pod.Spec.ImagePullSecrets = append(pod.Spec.ImagePullSecrets, corev1.LocalObjectReference{Name: ps})
 	}
 
+	// A '--mount type=bind' whose source does not exist is a hard error in Docker (unlike '-v', which
+	// auto-creates the source and destination as empty directories).
+	if missing := tainr.GetMissingMountSources(); len(missing) > 0 {
+		return DeployFailed, fmt.Errorf("invalid mount config for type \"bind\": bind source path does not exist: %s", strings.Join(missing, ", "))
+	}
+
 	if tainr.HasVolumes() {
 		if err := in.addVolumes(tainr, pod); err != nil {
 			return DeployFailed, err
@@ -596,6 +602,21 @@ func (in *instance) addSetupInitContainer(tainr *types.Container, pod *corev1.Po
 	return in.createSetupInitContainer(tainr)
 }
 
+// upsertInitContainer adds ic to the pod's init containers, replacing an
+// existing one of the same name rather than appending a duplicate, and leaving
+// any others in place. The setup container is built up across the addVolumes
+// and addPreArchives passes and runs alongside others such as the tools
+// injector, so both need to be preserved.
+func upsertInitContainer(pod *corev1.Pod, ic corev1.Container) {
+	for i := range pod.Spec.InitContainers {
+		if pod.Spec.InitContainers[i].Name == ic.Name {
+			pod.Spec.InitContainers[i] = ic
+			return
+		}
+	}
+	pod.Spec.InitContainers = append(pod.Spec.InitContainers, ic)
+}
+
 // addVolumes will add an init-container SetupInitContainerName and creates volumes and
 // volume mounts in both the init container and "main" container in order
 // to copy data before the container is started. If files are included,
@@ -642,7 +663,7 @@ func (in *instance) addVolumes(tainr *types.Container, pod *corev1.Pod) error {
 	}
 
 	initContainer.VolumeMounts = append(initContainer.VolumeMounts, mounts...)
-	pod.Spec.InitContainers = []corev1.Container{*initContainer}
+	upsertInitContainer(pod, *initContainer)
 	pod.Spec.Volumes = append(pod.Spec.Volumes, volumes...)
 	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, mounts...)
 
@@ -696,7 +717,7 @@ func (in *instance) addPreArchives(tainr *types.Container, pod *corev1.Pod) erro
 	}
 
 	initContainer.VolumeMounts = append(initContainer.VolumeMounts, mounts...)
-	pod.Spec.InitContainers = []corev1.Container{*initContainer}
+	upsertInitContainer(pod, *initContainer)
 	pod.Spec.Volumes = append(pod.Spec.Volumes, volumes...)
 	pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, mounts...)
 

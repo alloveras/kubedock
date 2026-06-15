@@ -749,6 +749,10 @@ func TestVolumes(t *testing.T) {
 			},
 			folders: map[string]string{
 				"/tmp/types": "../types",
+				// A '--mount' source that can't be stat'd is not mounted as an
+				// empty folder (a '-v' bind would be); GetMissingMountSources
+				// reports it instead. The docker socket is handled by the dind
+				// sidecar.
 			},
 			vol:  true,
 			sock: true,
@@ -760,6 +764,46 @@ func TestVolumes(t *testing.T) {
 			folders: map[string]string{},
 			vol:     false,
 			sock:    false,
+		},
+		{
+			// A bind ('-v') whose source can't be stat'd is mounted as an empty
+			// folder and reported by HasVolumes, matching Docker's '-v'.
+			in: &Container{Binds: []string{"/host/scratch:/data"}},
+			all: map[string]string{
+				"/data": "/host/scratch",
+			},
+			files: map[string]string{},
+			folders: map[string]string{
+				"/data": "/host/scratch",
+			},
+			vol:  true,
+			sock: false,
+		},
+		{
+			// The docker socket is handled by the dind sidecar, so it is not
+			// mounted as a volume and HasVolumes is false.
+			in: &Container{Binds: []string{"/var/run/docker.sock:/var/run/docker.sock:rw"}},
+			all: map[string]string{
+				"/var/run/docker.sock": "/var/run/docker.sock",
+			},
+			files:   map[string]string{},
+			folders: map[string]string{},
+			vol:     false,
+			sock:    true,
+		},
+		{
+			// A '--mount' source that is a readable directory is mounted and
+			// seeded, the same as a '-v' bind to that directory.
+			in: &Container{Mounts: []Mount{{Source: "../types", Target: "/tmp/types", Type: "bind"}}},
+			all: map[string]string{
+				"/tmp/types": "../types",
+			},
+			files: map[string]string{},
+			folders: map[string]string{
+				"/tmp/types": "../types",
+			},
+			vol:  true,
+			sock: false,
 		},
 	}
 	for i, tst := range tests {
@@ -780,6 +824,43 @@ func TestVolumes(t *testing.T) {
 		}
 		if tst.in.HasDockerSockBinding() != tst.sock {
 			t.Errorf("failed test %d sock - expected %t, but got %t", i, tst.in.HasDockerSockBinding(), tst.sock)
+		}
+	}
+}
+
+func TestGetMissingMountSources(t *testing.T) {
+	tests := []struct {
+		name string
+		in   *Container
+		want []string
+	}{
+		{
+			name: "no mounts",
+			in:   &Container{Binds: []string{"/host/scratch:/data"}},
+			want: []string{},
+		},
+		{
+			name: "mount with existing source",
+			in:   &Container{Mounts: []Mount{{Source: "../types", Target: "/tmp/types", Type: "bind"}}},
+			want: []string{},
+		},
+		{
+			name: "mount with missing source",
+			in:   &Container{Mounts: []Mount{{Source: "/abc", Target: "def", Type: "bind"}}},
+			want: []string{"/abc"},
+		},
+		{
+			// A missing bind ('-v') source is mounted as an empty folder by
+			// GetVolumeFolders, so it is not reported here.
+			name: "missing bind source is not reported",
+			in:   &Container{Binds: []string{"/abc:/def"}},
+			want: []string{},
+		},
+	}
+	for _, tst := range tests {
+		got := tst.in.GetMissingMountSources()
+		if !reflect.DeepEqual(got, tst.want) {
+			t.Errorf("%s: expected %v, but got %v", tst.name, tst.want, got)
 		}
 	}
 }

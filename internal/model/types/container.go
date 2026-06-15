@@ -407,17 +407,41 @@ func (co *Container) GetVolumes() map[string]string {
 	return mounts
 }
 
-// GetVolumeFolders will return a map of volumes that are pointing to a
-// folder and should be mounted on the target container. The key
-// is the target location, and the value is the local location.
+// GetVolumeFolders will return a map of volumes that should be mounted on the
+// target container as a folder. The key is the target location, and the value
+// is the local location.
+//
+// A source that is a readable directory is mounted and seeded with its
+// contents. A bind ('-v') source that cannot be stat'd is mounted as an empty
+// volume, the same way Docker creates a missing '-v' source as an empty
+// directory. A mount ('--mount') source that cannot be stat'd is left out here
+// and reported by GetMissingMountSources instead, as Docker errors on a
+// '--mount type=bind' with a non-existent source. Readable single files are
+// handled by GetVolumeFiles, and the docker socket is provided by the dind
+// sidecar.
 func (co *Container) GetVolumeFolders() map[string]string {
-	mounts := map[string]string{}
-	for dst, src := range co.GetVolumes() {
-		if info, err := os.Stat(src); err == nil && info.IsDir() {
-			mounts[dst] = src
-		}
+	mountTargets := map[string]struct{}{}
+	for _, m := range co.Mounts {
+		mountTargets[m.Target] = struct{}{}
 	}
-	return mounts
+	folders := map[string]string{}
+	for dst, src := range co.GetVolumes() {
+		if dst == "/var/run/docker.sock" {
+			continue
+		}
+		info, err := os.Stat(src)
+		if err == nil && !info.IsDir() {
+			// Single file; handled by GetVolumeFiles.
+			continue
+		}
+		if _, isMount := mountTargets[dst]; err != nil && isMount {
+			// A missing '--mount' source is reported by GetMissingMountSources,
+			// not mounted as an empty volume.
+			continue
+		}
+		folders[dst] = src
+	}
+	return folders
 }
 
 // GetVolumeFiles will return a map of volumes that are pointing to a
@@ -431,6 +455,22 @@ func (co *Container) GetVolumeFiles() map[string]string {
 		}
 	}
 	return mounts
+}
+
+// GetMissingMountSources returns the sources of any mount ('--mount') entries
+// whose source path cannot be stat'd. Docker errors when starting a container
+// with a '--mount type=bind' whose source does not exist, unlike a bind ('-v'),
+// which creates a missing source as an empty directory. Binds with a missing
+// source are mounted empty by GetVolumeFolders; mounts are returned here so the
+// caller can reject them.
+func (co *Container) GetMissingMountSources() []string {
+	missing := []string{}
+	for _, m := range co.Mounts {
+		if _, err := os.Stat(m.Source); err != nil {
+			missing = append(missing, m.Source)
+		}
+	}
+	return missing
 }
 
 // HasDockerSockBinding will check the bindings specified in the container
@@ -474,9 +514,14 @@ func (co *Container) GetPreArchiveFiles() map[string][]File {
 	return files
 }
 
-// HasVolumes will return true if the container has volumes configured.
+// HasVolumes will return true if the container has any bind that will actually
+// be mounted into the target container, as a folder or as a file. It is kept in
+// lockstep with GetVolumeFolders/GetVolumeFiles so the volume setup machinery
+// (the setup init container and the content copy) runs exactly when there is
+// something to mount — never leaving an orphaned init container, and never
+// silently skipping a bind supplied via Mounts rather than Binds.
 func (co *Container) HasVolumes() bool {
-	return len(co.Binds) > 0
+	return len(co.GetVolumeFolders()) > 0 || len(co.GetVolumeFiles()) > 0
 }
 
 // HasPreArchives will return true if the container has pre archives configured.
